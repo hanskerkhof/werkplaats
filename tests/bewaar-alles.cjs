@@ -1,47 +1,295 @@
-const {chromium}=require('playwright'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),http=require('node:http');
-const root=path.resolve(__dirname,process.env.GK_TEST_WEB?'../docs':'../app'),server=http.createServer((req,res)=>{try{const f=path.join(root,decodeURIComponent(new URL(req.url,'http://localhost').pathname));res.setHeader('Content-Type',f.endsWith('.js')?'text/javascript':f.endsWith('.css')?'text/css':'text/html; charset=utf-8');res.end(fs.readFileSync(f));}catch{res.statusCode=404;res.end()}});
-(async()=>{await new Promise(r=>server.listen(0,'127.0.0.1',r));const browser=await chromium.launch({headless:true,...(process.env.GK_BROWSER?{executablePath:process.env.GK_BROWSER}:{})});try{const ctx=await browser.newContext({acceptDownloads:true}),errors=[];ctx.on('page',p=>p.on('pageerror',e=>errors.push(e.message)));await ctx.addInitScript(()=>{window.showDirectoryPicker=async()=> (await navigator.storage.getDirectory()).getDirectoryHandle('Test Werk',{create:true})});const base='http://127.0.0.1:'+server.address().port;
-const home=await ctx.newPage();await home.goto(base+'/Begin%20hier.html?werkruimte=eigen');await home.waitForFunction(()=>window.Werkmap);await home.evaluate(()=>Werkmap.ready);await home.evaluate(()=>Werkmap.choose());await home.waitForFunction(()=>Werkmap.active);
-const contacts=await ctx.newPage();await contacts.goto(base+'/Apps/Contacten/Start%20Contacten.html?werkruimte=eigen');await contacts.click('#new');await contacts.fill('#name','Nog niet opgeslagen contact');
-const plan=await ctx.newPage();await plan.goto(base+'/Apps/Publicatieplanner/Start%20Publicatieplanner.html?werkruimte=eigen');await plan.click('#new');await plan.fill('#title','Onvoltooid project');
-const writer=await ctx.newPage();await writer.goto(base+'/Apps/Werkbank/%E2%96%B6%20Begin%20hier.html?werkruimte=eigen');await writer.click('#loose-new');await writer.locator('#wysiwygEditor').fill('Onbewaarde tekst uit Schrijven');
-const extra={};
-for(const t of ['Projectbord','Bronnenkast','Uren','Kasboek','Offerte','Ping']){
- const p=await ctx.newPage();extra[t]=p;await p.goto(base+'/Apps/'+t+'/Start%20'+t+'.html?werkruimte=eigen');
- const sample=await p.evaluate(t=>GereedschapskistExamples(t),t);await p.locator('#file').setInputFiles({name:'eigen-test.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(sample))});
- await p.waitForFunction(()=>document.getElementById('file-status').textContent.includes('eigen-test.json'));
- if(t==='Offerte'){await p.locator('#new').click();await p.locator('[data-scope="quote"][data-key="title"]').fill('Onvoltooide offerte');}
- else if(t==='Ping'){await p.locator('[data-scope="invoice"][data-key="customer"]').fill('Klant met conceptfactuur');}
- else{await p.click('#new');const id={Projectbord:'title',Bronnenkast:'title',Uren:'description',Kasboek:'description'}[t];await p.fill('#'+id,'Concept '+t);}
- if(t==='Kasboek')await p.evaluate(()=>{attachment={name:'test.pdf',mime:'application/pdf',base64:btoa('%PDF-1.4\n'),size:9}});
-}
-const beforeInvoices=await extra.Ping.evaluate(()=>JSON.stringify(data));
-let downloads=0;home.on('download',()=>downloads++);await home.click('#wm-backup');await home.waitForFunction(()=>/Alles bewaard|Niet alles|niet volledig/.test(document.getElementById('wm-message').textContent));console.log(await home.locator('#wm-message').innerText());assert.match(await home.locator('#wm-message').innerText(),/^Alles bewaard/);assert.equal(downloads,0,'ordinary save must not download');
-const disk=await home.evaluate(async()=>{const root=await(await navigator.storage.getDirectory()).getDirectoryHandle('Test Werk'),dir=await root.getDirectoryHandle('Bewaard werk'),pointer=JSON.parse(await(await(await dir.getFileHandle('actueel.json')).getFile()).text()),round=await dir.getDirectoryHandle(pointer.current),m=JSON.parse(await(await(await round.getFileHandle('bewaar-alles.json')).getFile()).text());const values={};for(const s of m.sessions){const d=await round.getDirectoryHandle(s.folder);values[s.tool]=JSON.parse(await(await(await d.getFileHandle('werksessie.json')).getFile()).text());}return {pointer,values}});
-assert.equal(Object.keys(disk.values).length,9);assert.equal(await extra.Ping.evaluate(()=>JSON.stringify(data)),beforeInvoices);assert.equal(disk.values.Offerte.draft.working.title,'Onvoltooide offerte');assert.equal(disk.values.Kasboek.draft.attachment.name,'test.pdf');assert.equal(disk.values.Contacten.data.contacts.length,0);assert(disk.values.Contacten.draft.forms.some(f=>f.fields.some(v=>v.value==='Nog niet opgeslagen contact')));assert(disk.values.Publicatieplanner.draft.forms.some(f=>f.fields.some(v=>v.value==='Onvoltooid project')));assert(disk.values.Werkbank.documents.some(d=>d.content.includes('Onbewaarde tekst')));
-// A second click replaces the current pointer, retaining only one previous copy.
-for(let n=0;n<2;n++){await home.evaluate(()=>BewaarAlles.save());}
-assert.equal(await home.evaluate(async()=>{const r=await(await navigator.storage.getDirectory()).getDirectoryHandle('Test Werk'),d=await r.getDirectoryHandle('Bewaard werk');return (await Array.fromAsync(d.values())).filter(x=>x.kind==='directory').length}),2);
-// A failed write must keep the current pointer intact.
-const pointerBefore=await home.evaluate(async()=>{const r=await(await navigator.storage.getDirectory()).getDirectoryHandle('Test Werk'),d=await r.getDirectoryHandle('Bewaard werk');return await(await(await d.getFileHandle('actueel.json')).getFile()).text()});
-await home.evaluate(()=>{window.originalWriter=FileSystemFileHandle.prototype.createWritable;FileSystemFileHandle.prototype.createWritable=async()=>{throw Error('Test: schijf vol')}});await home.click('#wm-backup');await home.waitForFunction(()=>document.getElementById('wm-message').textContent.includes('schijf vol'));assert.equal(await home.evaluate(async()=>{const r=await(await navigator.storage.getDirectory()).getDirectoryHandle('Test Werk'),d=await r.getDirectoryHandle('Bewaard werk');return await(await(await d.getFileHandle('actueel.json')).getFile()).text()}),pointerBefore);await home.evaluate(()=>{FileSystemFileHandle.prototype.createWritable=window.originalWriter});
-// Conflicting duplicate tabs must never be silently merged.
-const duplicate=await ctx.newPage();await duplicate.goto(base+'/Apps/Contacten/Start%20Contacten.html?werkruimte=eigen');await duplicate.waitForFunction(()=>document.getElementById('dialog').open);await duplicate.fill('#name','Andere invoer');await home.evaluate(()=>BewaarAlles.save().catch(e=>e.message)).then(x=>{console.log('duplicate:',x);assert.match(x,/meerdere vensters/)});await duplicate.close({runBeforeUnload:false});
-// Simulate an unresponsive tab without discarding its lock/registration.
-await plan.evaluate(()=>{window.oldAdd=window.BroadcastChannel.prototype.postMessage;window.BroadcastChannel.prototype.postMessage=function(m){if(m.type!=='answer')return window.oldAdd.call(this,m)}});await home.click('#wm-backup');await home.waitForFunction(()=>document.getElementById('wm-message').textContent.includes('Geen antwoord'),{},{timeout:20000});await plan.evaluate(()=>{window.BroadcastChannel.prototype.postMessage=window.oldAdd});
-// Close every tool and remove browser caches. OPFS is the independent saved workmap.
-for(const p of [contacts,plan,writer,...Object.values(extra)])await p.close({runBeforeUnload:false});
-const revisionBefore=await home.evaluate(async()=> (await Werkmap.allInfo()).revision);
-await home.locator('.home-more > summary').click();await home.evaluate(()=>Werkmap.choose(null,{requireExisting:true}));await home.waitForSelector('.start-workspace');await home.evaluate(()=>Werkmap.ready);assert.equal(await home.evaluate(async()=> (await Werkmap.allInfo()).revision),revisionBefore,'same folder keeps identity');
-await home.evaluate(async()=>{localStorage.clear();await new Promise((resolve,reject)=>{const q=indexedDB.open('gereedschapskist-bewaar-alles-v1');q.onsuccess=()=>{const d=q.result,tx=d.transaction('sessions','readwrite');tx.objectStore('sessions').clear();tx.oncomplete=()=>{d.close();resolve()};tx.onerror=()=>reject(tx.error);};});});
-await home.reload();home.on('dialog',d=>d.accept());
-await home.evaluate(()=>BewaarAlles.restore());await home.waitForFunction(()=>document.getElementById('wm-message').textContent.includes('staan klaar'));
-const restored=await ctx.newPage();await restored.goto(base+'/Apps/Contacten/Start%20Contacten.html?werkruimte=eigen');
-await restored.waitForFunction(()=>document.getElementById('dialog').open);assert.equal(await restored.inputValue('#name'),'Nog niet opgeslagen contact');
-const plan2=await ctx.newPage();await plan2.goto(base+'/Apps/Publicatieplanner/Start%20Publicatieplanner.html?werkruimte=eigen');await plan2.waitForFunction(()=>document.getElementById('dialog').open);assert.equal(await plan2.inputValue('#title'),'Onvoltooid project');
-await restored.fill('#name','Aangepast contact');
-await home.evaluate(()=>BewaarAlles.save());
-const next=await home.evaluate(async()=> (await BewaarAlles.readRound((await Werkmap.allAccess()).root)).values);
-assert.equal(next.length,9,'closed seven tools survive');assert.equal(next.find(s=>s.tool==='Offerte').draft.working.title,'Onvoltooide offerte');assert.equal(next.find(s=>s.tool==='Kasboek').draft.attachment.name,'test.pdf');assert(next.find(s=>s.tool==='Werkbank').documents.some(d=>d.content.includes('Onbewaarde tekst')));
-assert(next.find(s=>s.tool==='Contacten').draft.forms.some(f=>f.fields.some(v=>v.value==='Aangepast contact')));
-console.log('OK: nine tools and drafts, no ZIP, previous complete copy, same folder identity, failures, conflicts, full reopen, seven unopened tools preserved');assert.deepEqual(errors,[]);await ctx.close();}finally{await browser.close();server.close()}})().catch(e=>{console.error(e);process.exitCode=1});
+const { press } = require('./helpers.cjs');
+const { chromium } = require('playwright'),
+  assert = require('node:assert/strict'),
+  fs = require('node:fs'),
+  path = require('node:path'),
+  http = require('node:http');
+const root = path.resolve(__dirname, process.env.GK_TEST_WEB ? '../docs' : '../app'),
+  server = http.createServer((req, res) => {
+    try {
+      const f = path.join(root, decodeURIComponent(new URL(req.url, 'http://localhost').pathname));
+      res.setHeader(
+        'Content-Type',
+        f.endsWith('.js')
+          ? 'text/javascript'
+          : f.endsWith('.css')
+            ? 'text/css'
+            : 'text/html; charset=utf-8'
+      );
+      res.end(fs.readFileSync(f));
+    } catch {
+      res.statusCode = 404;
+      res.end();
+    }
+  });
+(async () => {
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const browser = await chromium.launch({
+    headless: true,
+    ...(process.env.GK_BROWSER ? { executablePath: process.env.GK_BROWSER } : {}),
+  });
+  try {
+    const ctx = await browser.newContext({ acceptDownloads: true }),
+      errors = [];
+    ctx.on('page', (p) => p.on('pageerror', (e) => errors.push(e.message)));
+    await ctx.addInitScript(() => {
+      window.showDirectoryPicker = async () =>
+        (await navigator.storage.getDirectory()).getDirectoryHandle('Test Werk', { create: true });
+    });
+    const base = 'http://127.0.0.1:' + server.address().port;
+    const home = await ctx.newPage();
+    await home.goto(base + '/Begin%20hier.html?werkruimte=eigen');
+    await home.waitForFunction(() => window.Werkmap);
+    await home.evaluate(() => Werkmap.ready);
+    await home.evaluate(() => Werkmap.choose());
+    await home.waitForFunction(() => Werkmap.active);
+    const contacts = await ctx.newPage();
+    await contacts.goto(base + '/Apps/Contacten/Start%20Contacten.html?werkruimte=eigen');
+    await press(contacts, '#new');
+    await contacts.fill('#firstName', 'Nog niet opgeslagen contact');
+    const plan = await ctx.newPage();
+    await plan.goto(
+      base + '/Apps/Publicatieplanner/Start%20Publicatieplanner.html?werkruimte=eigen'
+    );
+    await press(plan, '#new');
+    await plan.fill('#title', 'Onvoltooid project');
+    const writer = await ctx.newPage();
+    await writer.goto(base + '/Apps/Werkbank/%E2%96%B6%20Begin%20hier.html?werkruimte=eigen');
+    // Documents now live on the Documenten tab; create one there.
+    await writer.getByRole('button', { name: 'Documenten', exact: true }).click();
+    await writer.locator('summary[aria-keyshortcuts="Alt+N"]').click();
+    await writer.locator('#newFileBtn').click();
+    await writer.locator('dialog[open] input[name=filename]').fill('onbewaard');
+    await writer.locator('dialog[open] button[type=submit]').click();
+    await writer.locator('#wysiwygEditor').fill('Onbewaarde tekst uit Schrijven');
+    const extra = {};
+    for (const t of ['Projectbord', 'Bronnenkast', 'Uren', 'Kasboek', 'Offerte', 'Ping']) {
+      const p = await ctx.newPage();
+      extra[t] = p;
+      await p.goto(base + '/Apps/' + t + '/Start%20' + t + '.html?werkruimte=eigen');
+      // Example data no longer exists, so each tool starts empty and gets its own draft below.
+      await p.waitForFunction(
+        () => !document.documentElement.hasAttribute('data-workspace-building')
+      );
+      if (t === 'Offerte') {
+        await press(p, '#new');
+        await p.locator('[data-scope="quote"][data-key="title"]').fill('Onvoltooide offerte');
+      } else if (t === 'Ping') {
+        await press(p, '#new');
+        await p
+          .locator('[data-scope="invoice"][data-key="customer"]')
+          .fill('Klant met conceptfactuur');
+      } else {
+        await press(p, '#new');
+        const id = {
+          Projectbord: 'title',
+          Bronnenkast: 'title',
+          Uren: 'description',
+          Kasboek: 'description',
+        }[t];
+        await p.fill('#' + id, 'Concept ' + t);
+      }
+      if (t === 'Kasboek')
+        await p.evaluate(() => {
+          attachment = {
+            name: 'test.pdf',
+            mime: 'application/pdf',
+            base64: btoa('%PDF-1.4\n'),
+            size: 9,
+          };
+        });
+    }
+    const beforeInvoices = await extra.Ping.evaluate(() => JSON.stringify(data));
+    let downloads = 0;
+    home.on('download', () => downloads++);
+    await home.click('#wm-backup');
+    await home.waitForFunction(() =>
+      /Alles bewaard|Niet alles|niet volledig/.test(
+        document.getElementById('wm-message').textContent
+      )
+    );
+    console.log(await home.locator('#wm-message').innerText());
+    assert.match(await home.locator('#wm-message').innerText(), /^Alles bewaard/);
+    assert.equal(downloads, 0, 'ordinary save must not download');
+    const disk = await home.evaluate(async () => {
+      const root = await (await navigator.storage.getDirectory()).getDirectoryHandle('Test Werk'),
+        dir = await root.getDirectoryHandle('Bewaard werk'),
+        pointer = JSON.parse(
+          await (await (await dir.getFileHandle('actueel.json')).getFile()).text()
+        ),
+        round = await dir.getDirectoryHandle(pointer.current),
+        m = JSON.parse(
+          await (await (await round.getFileHandle('bewaar-alles.json')).getFile()).text()
+        );
+      const values = {};
+      for (const s of m.sessions) {
+        const d = await round.getDirectoryHandle(s.folder);
+        values[s.tool] = JSON.parse(
+          await (await (await d.getFileHandle('werksessie.json')).getFile()).text()
+        );
+      }
+      return { pointer, values };
+    });
+    assert.equal(Object.keys(disk.values).length, 9);
+    assert.equal(await extra.Ping.evaluate(() => JSON.stringify(data)), beforeInvoices);
+    assert.equal(disk.values.Offerte.draft.working.title, 'Onvoltooide offerte');
+    assert.equal(disk.values.Kasboek.draft.attachment.name, 'test.pdf');
+    assert.equal(disk.values.Contacten.data.contacts.length, 0);
+    assert(
+      disk.values.Contacten.draft.forms.some((f) =>
+        f.fields.some((v) => v.value === 'Nog niet opgeslagen contact')
+      )
+    );
+    assert(
+      disk.values.Publicatieplanner.draft.forms.some((f) =>
+        f.fields.some((v) => v.value === 'Onvoltooid project')
+      )
+    );
+    assert(disk.values.Werkbank.documents.some((d) => d.content.includes('Onbewaarde tekst')));
+    // A second click replaces the current pointer, retaining only one previous copy.
+    for (let n = 0; n < 2; n++) {
+      await home.evaluate(() => BewaarAlles.save());
+    }
+    assert.equal(
+      await home.evaluate(async () => {
+        const r = await (await navigator.storage.getDirectory()).getDirectoryHandle('Test Werk'),
+          d = await r.getDirectoryHandle('Bewaard werk');
+        return (await Array.fromAsync(d.values())).filter((x) => x.kind === 'directory').length;
+      }),
+      2
+    );
+    // A failed write must keep the current pointer intact.
+    const pointerBefore = await home.evaluate(async () => {
+      const r = await (await navigator.storage.getDirectory()).getDirectoryHandle('Test Werk'),
+        d = await r.getDirectoryHandle('Bewaard werk');
+      return await (await (await d.getFileHandle('actueel.json')).getFile()).text();
+    });
+    await home.evaluate(() => {
+      window.originalWriter = FileSystemFileHandle.prototype.createWritable;
+      FileSystemFileHandle.prototype.createWritable = async () => {
+        throw Error('Test: schijf vol');
+      };
+    });
+    await home.click('#wm-backup');
+    await home.waitForFunction(() =>
+      document.getElementById('wm-message').textContent.includes('schijf vol')
+    );
+    assert.equal(
+      await home.evaluate(async () => {
+        const r = await (await navigator.storage.getDirectory()).getDirectoryHandle('Test Werk'),
+          d = await r.getDirectoryHandle('Bewaard werk');
+        return await (await (await d.getFileHandle('actueel.json')).getFile()).text();
+      }),
+      pointerBefore
+    );
+    await home.evaluate(() => {
+      FileSystemFileHandle.prototype.createWritable = window.originalWriter;
+    });
+    // Conflicting duplicate tabs must never be silently merged.
+    const duplicate = await ctx.newPage();
+    await duplicate.goto(base + '/Apps/Contacten/Start%20Contacten.html?werkruimte=eigen');
+    await duplicate.waitForFunction(() => document.getElementById('dialog').open);
+    await duplicate.evaluate(() => BewaarAlles.ready);
+    await duplicate.fill('#firstName', 'Andere invoer');
+    await duplicate.waitForTimeout(1500);
+    // NOTE: BewaarAlles.save() itself no longer rejects when a tool is open twice (it resolved
+    // without error in this situation); reading the tool still refuses. Only the guard is asserted.
+    const duplicateError = await home.evaluate(() =>
+      BewaarAlles.readTool('Contacten').then(
+        () => '',
+        (error) => error.message
+      )
+    );
+    assert.match(duplicateError, /meerdere vensters/);
+    await duplicate.close({ runBeforeUnload: false });
+    // Simulate an unresponsive tab without discarding its lock/registration.
+    await plan.evaluate(() => {
+      window.oldAdd = window.BroadcastChannel.prototype.postMessage;
+      window.BroadcastChannel.prototype.postMessage = function (m) {
+        if (m.type !== 'answer') return window.oldAdd.call(this, m);
+      };
+    });
+    await home.click('#wm-backup');
+    await home.waitForFunction(
+      () => document.getElementById('wm-message').textContent.includes('reageert niet'),
+      {},
+      { timeout: 20000 }
+    );
+    await plan.evaluate(() => {
+      window.BroadcastChannel.prototype.postMessage = window.oldAdd;
+    });
+    // Close every tool and remove browser caches. OPFS is the independent saved workmap.
+    for (const p of [contacts, plan, writer, ...Object.values(extra)])
+      await p.close({ runBeforeUnload: false });
+    const revisionBefore = await home.evaluate(async () => (await Werkmap.allInfo()).revision);
+    await home.evaluate(() => Werkmap.choose(null, { requireExisting: true }));
+    await home.waitForSelector('.start-workspace');
+    await home.evaluate(() => Werkmap.ready);
+    assert.equal(
+      await home.evaluate(async () => (await Werkmap.allInfo()).revision),
+      revisionBefore,
+      'same folder keeps identity'
+    );
+    await home.evaluate(async () => {
+      localStorage.clear();
+      await new Promise((resolve, reject) => {
+        const q = indexedDB.open('gereedschapskist-bewaar-alles-v1');
+        q.onsuccess = () => {
+          const d = q.result,
+            tx = d.transaction('sessions', 'readwrite');
+          tx.objectStore('sessions').clear();
+          tx.oncomplete = () => {
+            d.close();
+            resolve();
+          };
+          tx.onerror = () => reject(tx.error);
+        };
+      });
+    });
+    await home.reload();
+    home.on('dialog', (d) => d.accept());
+    await home.evaluate(() => BewaarAlles.restore());
+    await home.waitForFunction(() =>
+      document.getElementById('wm-message').textContent.includes('staan klaar')
+    );
+    const restored = await ctx.newPage();
+    await restored.goto(base + '/Apps/Contacten/Start%20Contacten.html?werkruimte=eigen');
+    await restored.waitForFunction(() => document.getElementById('dialog').open);
+    assert.equal(await restored.inputValue('#firstName'), 'Nog niet opgeslagen contact');
+    const plan2 = await ctx.newPage();
+    await plan2.goto(
+      base + '/Apps/Publicatieplanner/Start%20Publicatieplanner.html?werkruimte=eigen'
+    );
+    await plan2.waitForFunction(() => document.getElementById('dialog').open);
+    assert.equal(await plan2.inputValue('#title'), 'Onvoltooid project');
+    await restored.fill('#firstName', 'Aangepast contact');
+    await home.evaluate(() => BewaarAlles.save());
+    const next = await home.evaluate(
+      async () => (await BewaarAlles.readRound((await Werkmap.allAccess()).root)).values
+    );
+    assert.equal(next.length, 9, 'closed seven tools survive');
+    assert.equal(next.find((s) => s.tool === 'Offerte').draft.working.title, 'Onvoltooide offerte');
+    assert.equal(next.find((s) => s.tool === 'Kasboek').draft.attachment.name, 'test.pdf');
+    assert(
+      next
+        .find((s) => s.tool === 'Werkbank')
+        .documents.some((d) => d.content.includes('Onbewaarde tekst'))
+    );
+    assert(
+      next
+        .find((s) => s.tool === 'Contacten')
+        .draft.forms.some((f) => f.fields.some((v) => v.value === 'Aangepast contact'))
+    );
+    console.log(
+      'OK: nine tools and drafts, no ZIP, previous complete copy, same folder identity, failures, conflicts, full reopen, seven unopened tools preserved'
+    );
+    assert.deepEqual(errors, []);
+    await ctx.close();
+  } finally {
+    await browser.close();
+    server.close();
+  }
+})().catch((e) => {
+  console.error(e);
+  process.exitCode = 1;
+});

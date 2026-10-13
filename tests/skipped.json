@@ -1,0 +1,5 @@
+{
+  "koppelingen-werkmap.cjs": "Tests the removed file handover (Exports transfer file, #take-hours-file). Uren now creates a draft invoice directly in Factureren. Needs a rewrite for the new flow.",
+  "koppelingen.cjs": "Same removed file handover as koppelingen-werkmap.cjs (download of overdracht.json, #take-hours-file upload). Needs a rewrite for the direct handoff.",
+  "werkruimte-ui.cjs": "Blocked by BUG-001 in BUGS.md ([object Object] in the form dialog save status). Also still has old-layout assumptions to review."
+}

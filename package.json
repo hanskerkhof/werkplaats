@@ -4,7 +4,12 @@
   "description": "Development tooling for Werkplaats. The app itself has no runtime dependencies.",
   "license": "MIT",
   "scripts": {
+    "start": "node scripts/open-app.cjs",
+    "build": "python3 scripts/build.py",
+    "pretest": "npm run build --silent",
+    "pretest:headed": "npm run build --silent",
     "test": "node scripts/run-tests.cjs",
+    "test:headed": "HEADED=1 node scripts/run-tests.cjs",
     "check": "python3 scripts/check.py",
     "format": "prettier --write \"tests/**/*.cjs\" \"scripts/**/*.cjs\"",
     "format:check": "prettier --check \"tests/**/*.cjs\" \"scripts/**/*.cjs\""
