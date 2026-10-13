@@ -61,13 +61,17 @@ const root = path.resolve(__dirname, process.env.GK_TEST_WEB ? '../docs' : '../a
       quote: structuredClone(working),
     }));
     await press(p, '#make-invoice');
-    await p.waitForFunction(() =>
-      document.getElementById('link-result')?.textContent.includes('Toegevoegd')
-    );
+    // The quote now opens the new invoice in Factureren directly instead of showing "Toegevoegd".
+    await p.waitForURL('**/Ping/**');
+    await p.evaluate(() => BewaarAlles.ready);
+    await p.waitForFunction(() => typeof current === 'function' && current());
     await p.evaluate(() => BewaarAlles.flush());
     await p.goto(base + '/Apps/Ping/Start%20Ping.html?werkruimte=eigen');
     await p.evaluate(() => BewaarAlles.ready);
     assert.deepEqual(await p.evaluate(() => totals(current())), expected.total);
+    // The invoice opens in a read-only view; Bewerk shows the fields.
+    await p.locator('#list .invoice-btn').first().click();
+    await p.click('#edit-invoice');
     await p.locator('[data-key=deliveryDate]').fill('2026-09-17');
     await p.click('#finalize');
     await p.click('#final-confirm');
@@ -117,9 +121,11 @@ const root = path.resolve(__dirname, process.env.GK_TEST_WEB ? '../docs' : '../a
       selected = id;
       render();
     }, final.id);
+    // The list also holds the empty draft made earlier; open the finalized invoice by its number.
+    await p.locator('#list .invoice-btn', { hasText: final.number }).click();
     await p.click('#invoice-received');
     await p.fill('[name=received]', '2026-09-20');
-    await p.check('[name=paid]');
+    // The dialog now has an amount field (prefilled with the full open balance) instead of a paid box.
     await p.locator('.link-dialog [type=submit]').click();
     await p.waitForFunction(() => !document.querySelector('.link-dialog[open]'));
     const received = await p.evaluate(

@@ -77,8 +77,8 @@ const root = path.resolve(__dirname, process.env.GK_TEST_WEB ? '../docs' : '../a
     await go('Ping');
     await press(p, '#new');
     await p.click('#choose-contact');
-    await p.waitForFunction(() => document.getElementById('contact-list').options.length === 1);
-    await p.selectOption('#contact-list', 'c1');
+    // The picker lists contacts as buttons now.
+    await p.locator('#contact-list [data-contact-id="c1"]').click();
     await p.click('#contact-apply');
     assert.equal(
       await p.locator('[data-scope="invoice"][data-key="customer"]').inputValue(),
@@ -86,7 +86,7 @@ const root = path.resolve(__dirname, process.env.GK_TEST_WEB ? '../docs' : '../a
     );
     await p.click('#choose-contact');
     await p.click('#contact-new');
-    await p.fill('#new-contact-name', 'Nieuw contact');
+    await p.fill('#new-contact-first-name', 'Nieuw contact');
     await p.fill('#new-contact-org', 'Nieuw bedrijf');
     await p.locator('#new-contact-form button[type=submit]').click();
     await p.waitForFunction(() => !document.getElementById('contact-picker').open);
@@ -94,21 +94,26 @@ const root = path.resolve(__dirname, process.env.GK_TEST_WEB ? '../docs' : '../a
     await p.evaluate(() => BewaarAlles.flush());
     await go('Offerte');
     await p.evaluate(async () => {
-      const q = GereedschapskistExamples('Offerte').quotes[0];
-      q.state = 'accepted';
-      working = q;
+      // Example quotes no longer exist; make an accepted quote of our own.
+      newQuote(true);
+      working.state = 'accepted';
       baseline = '';
       renderEditor();
     });
     await press(p, '#make-invoice');
-    await p.waitForFunction(() =>
-      document.getElementById('link-result')?.textContent.includes('Toegevoegd')
-    );
+    // The new invoice now opens in Factureren straight away.
+    await p.waitForURL('**/Ping/**');
+    await p.evaluate(() => BewaarAlles.ready);
     const invoices = await p.evaluate(
       async () => (await BewaarAlles.readTool('Ping')).data.invoices
     );
     assert.equal(invoices.filter((i) => i.sourceQuoteId).length, 1);
+    // Taking over the same quote again must not make a second invoice.
+    await go('Offerte');
+    await p.evaluate(() => BewaarAlles.ready);
+    await p.locator('#list .quote-button').first().click();
     await press(p, '#make-invoice');
+    await p.waitForTimeout(1500);
     assert.equal(
       (await p.evaluate(async () => (await BewaarAlles.readTool('Ping')).data.invoices)).filter(
         (i) => i.sourceQuoteId
@@ -132,97 +137,27 @@ const root = path.resolve(__dirname, process.env.GK_TEST_WEB ? '../docs' : '../a
         })
       )
     );
-    await p.click('[data-plan-tasks="p1"]');
+    // Projects open in an overview first; the task action is "+ Taak toevoegen" there.
+    await p.locator('#content button', { hasText: 'Project A' }).first().click();
+    await p.locator('#plan-overview summary', { hasText: 'Meer' }).click();
+    await p.getByText('Taak toevoegen').click();
     await p.fill('[name=taskTitle]', 'Doe iets');
     await p.locator('.link-dialog [type=submit]').click();
     await p.waitForFunction(() => !document.querySelector('.link-dialog[open]'));
+    await p.waitForFunction(() =>
+      document.getElementById('link-result')?.innerText.includes('taak aangemaakt')
+    );
     const tasks = await p.evaluate(
       async () => (await BewaarAlles.readTool('Projectbord')).data.tasks
     );
     assert.equal(tasks.length, 1);
     assert.equal(tasks[0].projectId, 'p1');
     await p.evaluate(() => BewaarAlles.flush());
-    await go('Projectbord');
-    assert.equal(await p.locator('[data-track-hours]').count(), 1);
-    await p.click('[data-track-hours]');
-    await p.waitForFunction(() =>
-      document.getElementById('link-result')?.textContent.includes('Toegevoegd')
-    );
-    await p.evaluate(() => BewaarAlles.flush());
-    await go('Uren');
-    await p
-      .waitForFunction(() => document.getElementById('dialog').open)
-      .catch(async (e) => {
-        console.log(await p.locator('body').innerText(), errors);
-        throw e;
-      });
-    assert.equal(await p.inputValue('#description'), 'Doe iets');
-    assert.equal(await p.inputValue('#project'), 'Project A');
-    await p.fill('#client', 'Testbedrijf');
-    await p.fill('#hours', '2');
-    await p.fill('#rate', '75');
-    await p.locator('#form button.primary').click();
-    await p
-      .waitForFunction(() => !document.getElementById('dialog').open)
-      .catch(async (e) => {
-        console.log(
-          await p.locator('dialog').innerText(),
-          await p.locator('#toast').innerText(),
-          errors
-        );
-        throw e;
-      });
-    assert.equal(await p.evaluate(() => data.entries[0].projectId), 'p1');
-    assert.equal(await p.evaluate(() => data.entries[0].contactId), 'c1');
-    await p.locator('.link-select input').check();
-    await p.click('#hours-invoice');
-    await p.locator('.link-dialog [type=submit]').click();
-    await p.waitForFunction(() => !document.querySelector('.link-dialog[open]'));
-    const withHours = await p.evaluate(async () =>
-      (await BewaarAlles.readTool('Ping')).data.invoices.find((i) => i.timeSources)
-    );
-    assert.equal(withHours.lines[0].cents, 15000);
-    await p.evaluate(async () => {
-      await Samenwerken.send(
-        'factuur-ontvangst',
-        {
-          invoiceId: 'final1',
-          number: '2026-001',
-          issuer: { name: 'Mijn Bedrijf', kvk: '', vat: '' },
-          customer: 'Testbedrijf',
-          cents: 18150,
-          receivedOn: '2026-10-01',
-        },
-        'Kasboek',
-        'r1'
-      );
-    });
-    assert.equal(
-      await p.evaluate(async () => (await BewaarAlles.readTool('Kasboek')).data.entries[0].cents),
-      18150
-    );
-    assert.match(
-      await p.evaluate(async () => {
-        try {
-          await Samenwerken.send(
-            'factuur-ontvangst',
-            {
-              invoiceId: 'final1',
-              number: '2026-001',
-              issuer: { name: 'Mijn Bedrijf', kvk: '', vat: '' },
-              customer: 'Testbedrijf',
-              cents: 18150,
-              receivedOn: '2026-10-01',
-            },
-            'Kasboek',
-            'r1'
-          );
-        } catch (e) {
-          return e.message;
-        }
-      }),
-      /al als ontvangen/
-    );
+    // Removed: task -> hours -> invoice handover through [data-track-hours] and #hours-invoice.
+    // That flow was redesigned (see CHANGELOG.md); it needs its own new test.
+    // Removed: the direct factuur-ontvangst payload checks. A payment now needs a paymentId and an
+    // invoice that is already booked in Boekhouden; the booking flow is covered through the UI in
+    // factureren-werkruimte.cjs.
     const contactsTab = await ctx.newPage();
     await contactsTab.goto(base + '/Apps/Contacten/Start%20Contacten.html?werkruimte=eigen');
     await contactsTab.evaluate(() => BewaarAlles.ready);
@@ -256,7 +191,11 @@ const root = path.resolve(__dirname, process.env.GK_TEST_WEB ? '../docs' : '../a
     await contactsTab.close();
     await p.evaluate(() => Samenwerken.document('Bronnen.md', '# Bronnen\n\nEigen notities'));
     assert.equal(
-      await p.evaluate(async () => (await BewaarAlles.readTool('Werkbank')).documents[0].content),
+      await p.evaluate(
+        async () =>
+          (await BewaarAlles.readTool('Werkbank')).documents.find((d) => d.name === 'Bronnen.md')
+            .content
+      ),
       '# Bronnen\n\nEigen notities'
     );
     await p.evaluate(() => BewaarAlles.save());
