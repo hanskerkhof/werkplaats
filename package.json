@@ -1,0 +1,16 @@
+{
+  "name": "werkplaats",
+  "private": true,
+  "description": "Development tooling for Werkplaats. The app itself has no runtime dependencies.",
+  "license": "MIT",
+  "scripts": {
+    "test": "node scripts/run-tests.cjs",
+    "check": "python3 scripts/check.py",
+    "format": "prettier --write \"tests/**/*.cjs\" \"scripts/**/*.cjs\"",
+    "format:check": "prettier --check \"tests/**/*.cjs\" \"scripts/**/*.cjs\""
+  },
+  "devDependencies": {
+    "playwright": "^1.64.0",
+    "prettier": "^3.6.2"
+  }
+}
